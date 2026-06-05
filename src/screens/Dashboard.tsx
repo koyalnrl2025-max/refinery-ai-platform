@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { createClient } from '@/lib/supabase/client';
 import { I } from '@/components/icons';
 import Sentiment from '@/components/Sentiment';
 import ModelBadge from '@/components/ModelBadge';
@@ -19,15 +20,62 @@ interface DashboardData {
   activity: { text: string; user: string; time: string }[];
 }
 
+function formatTime(iso: string) {
+  const diff = Date.now() - new Date(iso).getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins} min ago`;
+  const h = Math.floor(mins / 60);
+  if (h < 24) return `${h}h ago`;
+  return `${Math.floor(h / 24)} days ago`;
+}
+
 export default function Dashboard() {
   const [data, setData] = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetch('/api/dashboard')
-      .then(r => r.json())
-      .then(d => { setData(d); setLoading(false); })
-      .catch(() => setLoading(false));
+    const supabase = createClient();
+    const today = new Date().toISOString().split('T')[0];
+
+    Promise.all([
+      supabase.from('query_stats').select('total_queries,avg_response_ms').eq('date', today).single(),
+      supabase.from('documents').select('id,dept,chunks', { count: 'exact' }).eq('status', 'indexed'),
+      supabase.from('profiles').select('id', { count: 'exact' }).eq('status', 'active').eq('enabled', true),
+      supabase.from('messages').select('content,sentiment,created_at,conversations(dept)').eq('role', 'user').order('created_at', { ascending: false }).limit(5),
+      supabase.from('audit_logs').select('action,resource,created_at,user_name').order('created_at', { ascending: false }).limit(5),
+    ]).then(([statsRes, docsRes, usersRes, msgsRes, actRes]) => {
+      const todayQ = statsRes.data?.total_queries ?? 0;
+      const docsIndexed = docsRes.count ?? 0;
+      const activeUsers = usersRes.count ?? 0;
+
+      // Coverage: group doc chunks by dept
+      const deptChunks: Record<string, number> = {};
+      (docsRes.data ?? []).forEach((d: { dept: string; chunks: number }) => {
+        deptChunks[d.dept] = (deptChunks[d.dept] ?? 0) + (d.chunks ?? 0);
+      });
+      const maxChunks = Math.max(...Object.values(deptChunks), 1);
+      const DEPT_LABELS: Record<string, string> = { hr: 'Human Resources', operations: 'Operations' };
+      const coverage = Object.entries(deptChunks)
+        .map(([dept, chunks]) => ({ name: DEPT_LABELS[dept] ?? dept, pct: Math.min(Math.round((chunks / maxChunks) * 100), 99) }))
+        .sort((a, b) => b.pct - a.pct);
+
+      const recentQueries = (msgsRes.data ?? []).map((m: Record<string, unknown>) => ({
+        text: m.content as string,
+        dept: ((m.conversations as Record<string, unknown>)?.dept as string)?.toUpperCase() ?? 'ALL',
+        sentiment: (m.sentiment as 'pos' | 'neu' | 'neg') ?? 'neu',
+        time: formatTime(m.created_at as string),
+      }));
+
+      const activity = (actRes.data ?? []).map((a: Record<string, unknown>) => ({
+        text: `${a.action}${a.resource ? ' — ' + a.resource : ''}`,
+        user: a.user_name as string,
+        time: formatTime(a.created_at as string),
+      }));
+
+      setData({ stats: { queriesToday: todayQ, queryDelta: 0, avgResponseMs: statsRes.data?.avg_response_ms ?? 0, docsIndexed, activeUsers }, coverage, recentQueries, activity });
+      setLoading(false);
+    }).catch(() => setLoading(false));
   }, []);
 
   // Merge real data with seed fallbacks for a full display

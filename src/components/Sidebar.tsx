@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { useApp } from '@/context/AppContext';
+import { createClient } from '@/lib/supabase/client';
 import Avatar from './Avatar';
 import RoleBadge from './RoleBadge';
 import { DashboardIcon, ChatIcon, AdminIcon, SparkleIcon, PlusIcon, ChevLeftIcon } from './icons';
@@ -39,10 +40,18 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
   const [conversations, setConversations] = useState<Conversation[]>([]);
 
   useEffect(() => {
-    fetch('/api/conversations')
-      .then(r => r.json())
-      .then(data => setConversations(Array.isArray(data) ? data : []))
-      .catch(() => {});
+    async function load() {
+      try {
+        const supabase = createClient();
+        const { data: { user } } = await supabase.auth.getUser();
+        if (!user) return;
+        const { data } = await supabase
+          .from('conversations').select('id,title,dept,updated_at')
+          .eq('user_id', user.id).order('updated_at', { ascending: false }).limit(8);
+        setConversations(Array.isArray(data) ? data as Conversation[] : []);
+      } catch {}
+    }
+    load();
   }, [pathname]);
 
   const navItems = [

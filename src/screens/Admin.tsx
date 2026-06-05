@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
+import { createClient } from '@/lib/supabase/client';
 import Avatar from '@/components/Avatar';
 import RoleBadge from '@/components/RoleBadge';
 import StatusChip from '@/components/StatusChip';
@@ -51,22 +52,27 @@ export default function Admin() {
 
   const loadData = useCallback(async (section: string) => {
     setLoading(true);
+    const supabase = createClient();
     try {
       if (section === 'users') {
-        const res = await fetch(`/api/users${search ? `?search=${encodeURIComponent(search)}` : ''}`);
-        setUsers(await res.json());
+        let q = supabase.from('profiles').select('id,name,email,role,dept,status,last_seen,queries,enabled').order('created_at', { ascending: false });
+        if (search) q = q.or(`name.ilike.%${search}%,email.ilike.%${search}%`);
+        const { data } = await q;
+        setUsers((data ?? []) as UserRow[]);
       } else if (section === 'docs') {
-        const res = await fetch(`/api/documents${docSeg !== 'all' ? `?status=${docSeg}` : ''}`);
-        setDocs(await res.json());
+        let q = supabase.from('documents').select('id,name,dept,file_size,chunks,status,updated_at').order('updated_at', { ascending: false });
+        if (docSeg !== 'all') q = q.eq('status', docSeg);
+        const { data } = await q;
+        setDocs((data ?? []) as DocRow[]);
       } else if (section === 'logs') {
-        const res = await fetch('/api/audit-logs');
-        setAuditLogs(await res.json());
+        const { data } = await supabase.from('audit_logs').select('id,user_name,action,resource,ip_address,created_at').order('created_at', { ascending: false }).limit(50);
+        setAuditLogs((data ?? []) as AuditRow[]);
       } else if (section === 'settings') {
-        const res = await fetch('/api/settings');
-        setSettings(await res.json());
+        const { data } = await supabase.from('platform_settings').select('key,label,description,enabled').order('key');
+        setSettings((data ?? []) as SettingRow[]);
       } else if (section === 'models') {
-        const res = await fetch('/api/models');
-        setModels(await res.json());
+        const { data } = await supabase.from('model_configs').select('id,name,description,provider,model_id,active,is_primary,priority').order('priority', { ascending: true });
+        setModels((data ?? []) as ModelRow[]);
       }
     } finally {
       setLoading(false);
@@ -76,23 +82,27 @@ export default function Admin() {
   useEffect(() => { loadData(activeNav); }, [activeNav, loadData]);
 
   async function toggleUser(id: string, enabled: boolean) {
-    await fetch(`/api/users/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled }) });
+    const supabase = createClient();
+    await supabase.from('profiles').update({ enabled }).eq('id', id);
     setUsers(prev => prev.map(u => u.id === id ? { ...u, enabled } : u));
   }
 
   async function toggleSetting(key: string, enabled: boolean) {
-    await fetch('/api/settings', { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key, enabled }) });
+    const supabase = createClient();
+    await supabase.from('platform_settings').update({ enabled }).eq('key', key);
     setSettings(prev => prev.map(s => s.key === key ? { ...s, enabled } : s));
   }
 
   async function toggleModel(id: string, active: boolean) {
-    await fetch(`/api/models/${id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ active }) });
+    const supabase = createClient();
+    await supabase.from('model_configs').update({ active }).eq('id', id);
     setModels(prev => prev.map(m => m.id === id ? { ...m, active } : m));
   }
 
   async function deleteDoc(id: string) {
     if (!confirm('Delete this document?')) return;
-    await fetch(`/api/documents/${id}`, { method: 'DELETE' });
+    const supabase = createClient();
+    await supabase.from('documents').delete().eq('id', id);
     setDocs(prev => prev.filter(d => d.id !== id));
   }
 
@@ -371,22 +381,61 @@ function InviteModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: (
 }
 
 function UploadModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: () => void }) {
-  const [dept, setDept] = useState('crude');
+  const [dept, setDept] = useState('operations');
   const [file, setFile] = useState<File | null>(null);
   const [loading, setLoading] = useState(false);
+  const [progress, setProgress] = useState('');
   const [error, setError] = useState('');
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     if (!file) return;
-    setLoading(true); setError('');
-    const fd = new FormData();
-    fd.append('file', file);
-    fd.append('dept', dept);
-    const res = await fetch('/api/documents/upload', { method: 'POST', body: fd });
-    const data = await res.json();
+    setLoading(true); setError(''); setProgress('Uploading to storage…');
+
+    const supabase = createClient();
+
+    // 1. Get current user
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) { setError('Not signed in.'); setLoading(false); return; }
+
+    // 2. Upload file directly to Supabase Storage from the browser
+    const storagePath = `${user.id}/${Date.now()}_${file.name.replace(/\s+/g, '_')}`;
+    const { error: storageErr } = await supabase.storage
+      .from('documents')
+      .upload(storagePath, file, { contentType: file.type });
+
+    if (storageErr) {
+      setError(`Storage upload failed: ${storageErr.message}`);
+      setLoading(false); return;
+    }
+
+    // 3. Create document record in DB
+    setProgress('Saving document record…');
+    const fileSizeStr = file.size > 1_048_576
+      ? `${(file.size / 1_048_576).toFixed(1)} MB`
+      : `${Math.round(file.size / 1024)} KB`;
+
+    const { error: dbErr } = await supabase.from('documents').insert({
+      name: file.name,
+      dept,
+      file_size: fileSizeStr,
+      file_size_bytes: file.size,
+      storage_path: storagePath,
+      uploaded_by: user.id,
+      status: 'processing',  // RAG indexing runs on the local server
+      chunks: 0,
+    });
+
     setLoading(false);
-    if (!res.ok) { setError(data.error ?? 'Upload failed'); return; }
+    if (dbErr) { setError(`DB error: ${dbErr.message}`); return; }
+
+    // 4. Audit log
+    await supabase.from('audit_logs').insert({
+      user_id: user.id, user_name: user.email,
+      action: 'Document upload', resource: file.name,
+      metadata: { dept, size: fileSizeStr, via: 'browser-direct' },
+    });
+
     onSuccess();
   }
 
@@ -405,12 +454,20 @@ function UploadModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: (
             <label>File (PDF, DOCX, TXT)</label>
             <input type="file" accept=".pdf,.docx,.txt,.doc" onChange={e => setFile(e.target.files?.[0] ?? null)} required style={{ fontSize: 13 }} />
           </div>
+          {loading && progress && (
+            <div style={{ fontSize: 12.5, color: 'var(--accent)' }}>{progress}</div>
+          )}
           {error && <div style={{ fontSize: 12.5, color: 'var(--red)' }}>{error}</div>}
           <div style={{ display: 'flex', gap: 10, marginTop: 4 }}>
             <button type="button" className="btn" onClick={onClose} style={{ flex: 1 }}>Cancel</button>
-            <button type="submit" className="btn btn-primary" disabled={loading || !file} style={{ flex: 1 }}>{loading ? 'Uploading…' : 'Upload'}</button>
+            <button type="submit" className="btn btn-primary" disabled={loading || !file} style={{ flex: 1 }}>
+              {loading ? progress || 'Uploading…' : 'Upload'}
+            </button>
           </div>
         </form>
+        <div style={{ marginTop: 14, fontSize: 12, color: 'var(--text-faint)', lineHeight: 1.5 }}>
+          File is stored in Supabase Storage. RAG indexing runs when the local server processes it.
+        </div>
       </div>
     </div>
   );
