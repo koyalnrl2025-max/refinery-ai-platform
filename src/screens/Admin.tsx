@@ -23,7 +23,7 @@ interface AuditRow {
   resource: string; ip_address: string; created_at: string;
 }
 interface SettingRow { key: string; label: string; description: string; enabled: boolean; }
-interface ModelRow { id: string; name: string; description: string; provider: string; active: boolean; is_primary: boolean; }
+interface ModelRow { id: string; name: string; description: string; provider: string; model_id: string; active: boolean; is_primary: boolean; priority: number; }
 
 function formatTime(iso: string) {
   const diff = Date.now() - new Date(iso).getTime();
@@ -205,27 +205,46 @@ export default function Admin() {
           </>
         );
 
-      case 'models':
+      case 'models': {
+        const PROVIDER_COLORS: Record<string, string> = {
+          ollama: 'var(--green)', anthropic: '#a78bfa', openai: '#60a5fa',
+        };
+        const PRIORITY_LABEL: Record<number, string> = { 1: 'Primary', 2: 'Fallback 1', 3: 'Fallback 2' };
         return (
           <div className="panel">
-            <div className="panel-h"><span className="card-h">AI Model Configuration</span></div>
+            <div className="panel-h">
+              <span className="card-h">AI Model Configuration</span>
+              <span className="faint" style={{ fontSize: 12 }}>Tried in priority order · local first</span>
+            </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
               {loading && <div style={{ color: 'var(--text-faint)', fontSize: 13 }}>Loading…</div>}
-              {models.map(m => (
-                <div key={m.id} className="doc-row" style={{ alignItems: 'center' }}>
-                  <div className="doc-ico" style={{ background: 'linear-gradient(135deg, var(--a1-soft), var(--a2-soft))' }}>
-                    {I('Sparkle')}
+              {[...models].sort((a, b) => a.priority - b.priority).map(m => {
+                const color = PROVIDER_COLORS[m.provider] ?? 'var(--text-faint)';
+                return (
+                  <div key={m.id} className="doc-row" style={{ alignItems: 'center' }}>
+                    <div className="doc-ico" style={{ background: `${color}18`, color }}>
+                      {I('Sparkle')}
+                    </div>
+                    <div style={{ flex: 1 }}>
+                      <div className="doc-name" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        {m.name}
+                        <span className="chip" style={{ fontSize: 10, color, borderColor: `${color}40`, background: `${color}10` }}>
+                          {PRIORITY_LABEL[m.priority] ?? `P${m.priority}`}
+                        </span>
+                        <span className="chip" style={{ fontSize: 10, color: 'var(--text-faint)' }}>
+                          {m.provider}
+                        </span>
+                      </div>
+                      <div className="doc-meta">{m.description} · <span style={{ fontFamily: 'var(--mono)', fontSize: 11 }}>{m.model_id}</span></div>
+                    </div>
+                    <Toggle on={m.active} onChange={v => toggleModel(m.id, v)} />
                   </div>
-                  <div style={{ flex: 1 }}>
-                    <div className="doc-name">{m.name}{m.is_primary && <span className="chip" style={{ marginLeft: 8, fontSize: 10 }}>Primary</span>}</div>
-                    <div className="doc-meta">{m.description}</div>
-                  </div>
-                  <Toggle on={m.active} onChange={v => toggleModel(m.id, v)} />
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         );
+      }
 
       case 'logs':
         return (

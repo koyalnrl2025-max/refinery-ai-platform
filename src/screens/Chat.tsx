@@ -7,12 +7,16 @@ import Avatar from '@/components/Avatar';
 import ModelBadge from '@/components/ModelBadge';
 import { SparkleIcon, SendIcon, AttachIcon, CopyIcon, ThumbIcon, RefreshIcon, DocIcon, PlusIcon } from '@/components/icons';
 
+type Provider = 'ollama' | 'anthropic' | 'openai';
+
 interface Message {
   id: string;
   role: 'user' | 'ai';
   content: string;
   citations?: { doc: string; page: string }[];
   streaming?: boolean;
+  provider?: Provider;
+  modelId?: string;
 }
 
 interface Conversation {
@@ -117,6 +121,8 @@ export default function Chat() {
       let buffer = '';
       let fullText = '';
       let citations: { doc: string; page: string }[] = [];
+      let activeProvider: Provider | undefined;
+      let activeModelId: string | undefined;
 
       while (true) {
         const { done, value } = await reader.read();
@@ -132,7 +138,6 @@ export default function Chat() {
             const event = JSON.parse(line.slice(6));
             if (event.type === 'conv_id' && event.id) {
               setConversationId(event.id);
-              // Add to conversations list
               setConversations(prev => {
                 const exists = prev.some(c => c.id === event.id);
                 if (!exists) {
@@ -140,6 +145,12 @@ export default function Chat() {
                 }
                 return prev;
               });
+            } else if (event.type === 'model') {
+              activeProvider = event.provider as Provider;
+              activeModelId = event.modelId;
+              setMessages(prev => prev.map(m =>
+                m.id === aiId ? { ...m, provider: activeProvider, modelId: activeModelId } : m
+              ));
             } else if (event.type === 'delta') {
               fullText += event.text;
               setMessages(prev => prev.map(m =>
@@ -148,11 +159,11 @@ export default function Chat() {
             } else if (event.type === 'done') {
               citations = event.citations ?? [];
               setMessages(prev => prev.map(m =>
-                m.id === aiId ? { ...m, content: fullText, streaming: false, citations } : m
+                m.id === aiId ? { ...m, content: fullText, streaming: false, citations, provider: event.provider, modelId: event.modelId } : m
               ));
             } else if (event.type === 'error') {
               setMessages(prev => prev.map(m =>
-                m.id === aiId ? { ...m, content: 'Sorry, I encountered an error. Please try again.', streaming: false } : m
+                m.id === aiId ? { ...m, content: 'Sorry, all AI providers are currently unavailable. Please try again later.', streaming: false } : m
               ));
             }
           } catch {}
@@ -260,7 +271,7 @@ export default function Chat() {
                         )}
                         {!msg.streaming && msg.id !== 'ai-0' && (
                           <div className="ai-foot">
-                            <ModelBadge />
+                            <ProviderBadge provider={msg.provider} modelId={msg.modelId} />
                             <div className="ai-actions">
                               <button className="ai-act" onClick={() => copyMessage(msg.content)} title="Copy"><CopyIcon /></button>
                               <button className="ai-act" title="Thumbs up"><ThumbIcon /></button>
@@ -319,5 +330,21 @@ export default function Chat() {
         </div>
       </div>
     </div>
+  );
+}
+
+const PROVIDER_LABELS: Record<string, { label: string; color: string }> = {
+  ollama:    { label: '🖥 Local (Ollama)',   color: 'var(--green)' },
+  anthropic: { label: '☁ Anthropic',         color: '#a78bfa' },
+  openai:    { label: '☁ OpenAI',            color: '#60a5fa' },
+};
+
+function ProviderBadge({ provider, modelId }: { provider?: Provider; modelId?: string }) {
+  if (!provider) return <span className="model-badge">RefineIQ</span>;
+  const { label, color } = PROVIDER_LABELS[provider] ?? { label: provider, color: 'var(--text-faint)' };
+  return (
+    <span className="model-badge" style={{ color, borderColor: `${color}40`, background: `${color}10`, fontSize: 11 }}>
+      {label}{modelId ? ` · ${modelId}` : ''}
+    </span>
   );
 }

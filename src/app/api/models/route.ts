@@ -8,8 +8,8 @@ export async function GET() {
 
   const { data } = await supabase
     .from('model_configs')
-    .select('id, name, description, provider, model_id, active, is_primary')
-    .order('is_primary', { ascending: false });
+    .select('id, name, description, provider, model_id, active, is_primary, priority')
+    .order('priority', { ascending: true });
 
   return NextResponse.json(data ?? []);
 }
