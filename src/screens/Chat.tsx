@@ -2,6 +2,7 @@
 
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { useApp } from '@/context/AppContext';
+import { createClient } from '@/lib/supabase/client';
 import { DEPT_CONTENT } from '@/lib/data';
 import Avatar from '@/components/Avatar';
 import ModelBadge from '@/components/ModelBadge';
@@ -109,9 +110,16 @@ export default function Chat() {
     setStreaming(true);
 
     try {
+      // Get current session token — needed by both the local API route
+      // and the Cloudflare Pages Function (which can't read cookies)
+      const supabase = createClient();
+      const { data: { session } } = await supabase.auth.getSession();
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (session?.access_token) headers['Authorization'] = `Bearer ${session.access_token}`;
+
       const res = await fetch('/api/chat', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({ message: msg, conversationId, dept }),
       });
 
