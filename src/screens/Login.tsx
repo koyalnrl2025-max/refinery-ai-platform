@@ -1,14 +1,12 @@
 'use client';
 
 import { useState } from 'react';
-import { useRouter } from 'next/navigation';
 import { createClient } from '@/lib/supabase/client';
 import { SparkleIcon, MailIcon, CheckIcon, LockIcon } from '@/components/icons';
 
 type Mode = 'password' | 'magic';
 
 export default function Login() {
-  const router = useRouter();
   const [mode, setMode] = useState<Mode>('password');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -35,8 +33,9 @@ export default function Login() {
         ? 'Incorrect email or password.'
         : error.message);
     } else {
-      router.push('/dashboard');
-      router.refresh();
+      // Hard navigation — ensures Supabase has time to set auth cookies before
+      // the next page loads, avoiding middleware redirect loop on local dev
+      window.location.href = '/dashboard';
     }
   }
 

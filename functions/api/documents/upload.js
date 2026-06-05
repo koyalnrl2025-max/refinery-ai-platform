@@ -124,6 +124,23 @@ async function embedBatch(texts, apiKey) {
   return results;
 }
 
+const CORS_HEADERS = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Methods': 'POST, OPTIONS',
+  'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+};
+
+const json = (body, status = 200) =>
+  new Response(JSON.stringify(body), {
+    status,
+    headers: { 'Content-Type': 'application/json', ...CORS_HEADERS },
+  });
+
+// Handle CORS preflight
+export async function onRequestOptions() {
+  return new Response(null, { status: 204, headers: CORS_HEADERS });
+}
+
 // ── Main handler ──────────────────────────────────────────────────────────────
 export async function onRequestPost(context) {
   const { request, env } = context;
@@ -132,21 +149,18 @@ export async function onRequestPost(context) {
   const SUPABASE_ANON = env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
   const OPENAI_KEY    = env.OPENAI_API_KEY;
 
-  if (!OPENAI_KEY)
-    return new Response(JSON.stringify({ error: 'OPENAI_API_KEY not configured' }), { status: 500 });
+  if (!OPENAI_KEY) return json({ error: 'OPENAI_API_KEY not configured' }, 500);
 
   // Auth
   const authHeader = request.headers.get('Authorization') ?? '';
-  if (!authHeader.startsWith('Bearer '))
-    return new Response(JSON.stringify({ error: 'Unauthorized' }), { status: 401 });
+  if (!authHeader.startsWith('Bearer ')) return json({ error: 'Unauthorized' }, 401);
   const token = authHeader.slice(7);
 
   // Verify user
   const userRes = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
     headers: { Authorization: `Bearer ${token}`, apikey: SUPABASE_ANON },
   });
-  if (!userRes.ok)
-    return new Response(JSON.stringify({ error: 'Unauthorized' }), { status: 401 });
+  if (!userRes.ok) return json({ error: 'Unauthorized' }, 401);
   const user = await userRes.json();
 
   // Check admin/mgr role via profiles table
@@ -156,15 +170,13 @@ export async function onRequestPost(context) {
   );
   const profiles = await profileRes.json();
   const role = profiles[0]?.role;
-  if (!['admin', 'mgr'].includes(role))
-    return new Response(JSON.stringify({ error: 'Forbidden' }), { status: 403 });
+  if (!['admin', 'mgr'].includes(role)) return json({ error: 'Forbidden' }, 403);
 
   // Parse multipart form
   const formData = await request.formData();
   const file = formData.get('file');
   const dept = formData.get('dept');
-  if (!file || !dept)
-    return new Response(JSON.stringify({ error: 'file and dept required' }), { status: 400 });
+  if (!file || !dept) return json({ error: 'file and dept required' }, 400);
 
   const fileBuffer  = await file.arrayBuffer();
   const fileSizeBytes = fileBuffer.byteLength;
@@ -191,7 +203,7 @@ export async function onRequestPost(context) {
   );
   if (!uploadRes.ok) {
     const err = await uploadRes.text();
-    return new Response(JSON.stringify({ error: `Storage upload failed: ${err}` }), { status: 500 });
+    return json({ error: `Storage upload failed: ${err}` }, 500);
   }
 
   // 2. Create document record
@@ -205,7 +217,7 @@ export async function onRequestPost(context) {
   });
   if (!docInsertRes.ok) {
     const err = await docInsertRes.text();
-    return new Response(JSON.stringify({ error: `DB insert failed: ${err}` }), { status: 500 });
+    return json({ error: `DB insert failed: ${err}` }, 500);
   }
   const docData = await docInsertRes.json();
   const docId = Array.isArray(docData) ? docData[0]?.id : docData?.id;
@@ -217,7 +229,7 @@ export async function onRequestPost(context) {
       method: 'PATCH', headers: { ...sbHeaders, Prefer: 'return=minimal' },
       body: JSON.stringify({ status: 'error' }),
     });
-    return new Response(JSON.stringify({ error: 'No extractable text. File may be image-based or unsupported.' }), { status: 422 });
+    return json({ error: 'No extractable text. File may be image-based or unsupported.' }, 422);
   }
 
   // 4. Chunk
@@ -227,7 +239,7 @@ export async function onRequestPost(context) {
       method: 'PATCH', headers: { ...sbHeaders, Prefer: 'return=minimal' },
       body: JSON.stringify({ status: 'error' }),
     });
-    return new Response(JSON.stringify({ error: 'Text produced no chunks.' }), { status: 422 });
+    return json({ error: 'Text produced no chunks.' }, 422);
   }
 
   // 5. Embed
@@ -239,7 +251,7 @@ export async function onRequestPost(context) {
       method: 'PATCH', headers: { ...sbHeaders, Prefer: 'return=minimal' },
       body: JSON.stringify({ status: 'error' }),
     });
-    return new Response(JSON.stringify({ error: `Embedding failed: ${err.message}` }), { status: 500 });
+    return json({ error: `Embedding failed: ${err.message}` }, 500);
   }
 
   // 6. Store chunks in batches of 20
@@ -255,7 +267,7 @@ export async function onRequestPost(context) {
     });
     if (!batchRes.ok) {
       const err = await batchRes.text();
-      return new Response(JSON.stringify({ error: `Chunk insert failed: ${err}` }), { status: 500 });
+      return json({ error: `Chunk insert failed: ${err}` }, 500);
     }
   }
 
@@ -276,8 +288,5 @@ export async function onRequestPost(context) {
     }),
   });
 
-  return new Response(JSON.stringify({ id: docId, name: file.name, status: 'indexed', chunks: chunks.length }), {
-    status: 201,
-    headers: { 'Content-Type': 'application/json' },
-  });
+  return json({ id: docId, name: file.name, status: 'indexed', chunks: chunks.length }, 201);
 }
