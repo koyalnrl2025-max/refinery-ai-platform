@@ -1,9 +1,9 @@
 'use client';
 
 import Link from 'next/link';
-import { usePathname } from 'next/navigation';
+import { usePathname, useRouter } from 'next/navigation';
+import { useEffect, useState } from 'react';
 import { useApp } from '@/context/AppContext';
-import { CONVERSATIONS } from '@/lib/data';
 import Avatar from './Avatar';
 import RoleBadge from './RoleBadge';
 import { DashboardIcon, ChatIcon, AdminIcon, SparkleIcon, PlusIcon, ChevLeftIcon } from './icons';
@@ -14,15 +14,45 @@ interface SidebarProps {
   onToggle: () => void;
 }
 
+interface Conversation {
+  id: string;
+  title: string;
+  dept: string;
+  updated_at: string;
+}
+
+function formatTime(iso: string) {
+  const diff = Date.now() - new Date(iso).getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 60) return `${mins}m ago`;
+  const h = Math.floor(mins / 60);
+  if (h < 24) return `${h}h ago`;
+  const days = Math.floor(h / 24);
+  if (days === 1) return 'Yesterday';
+  return `${days}d ago`;
+}
+
 export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
   const pathname = usePathname();
-  const { currentUser } = useApp();
+  const router = useRouter();
+  const { currentUser, signOut } = useApp();
+  const [conversations, setConversations] = useState<Conversation[]>([]);
+
+  useEffect(() => {
+    fetch('/api/conversations')
+      .then(r => r.json())
+      .then(data => setConversations(Array.isArray(data) ? data : []))
+      .catch(() => {});
+  }, [pathname]);
 
   const navItems = [
     { href: '/dashboard', label: 'Dashboard', Icon: DashboardIcon },
     { href: '/chat', label: 'Chat', Icon: ChatIcon },
     { href: '/admin', label: 'Admin', Icon: AdminIcon },
   ];
+
+  const displayName = currentUser?.name ?? 'Loading…';
+  const displayRole = (currentUser?.role ?? 'user') as Role;
 
   return (
     <div className={`sidebar${collapsed ? ' collapsed' : ''}`}>
@@ -55,25 +85,25 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
       <div className="side-section-label">Recent Chats</div>
 
       <div className="convo-list">
-        <button className="convo" style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--text-faint)' }}>
+        <Link href="/chat" className="convo" style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--text-faint)' }}>
           <PlusIcon style={{ width: 14, height: 14, flexShrink: 0 }} />
           New conversation
-        </button>
-        {CONVERSATIONS.map(c => (
-          <Link key={c.id} href="/chat" className={`convo${c.active ? ' active' : ''}`}>
+        </Link>
+        {conversations.slice(0, 8).map(c => (
+          <Link key={c.id} href={`/chat?conv=${c.id}`} className={`convo${pathname === '/chat' ? '' : ''}`}>
             {c.title}
-            <span className="convo-time">{c.time}</span>
+            <span className="convo-time">{formatTime(c.updated_at)}</span>
           </Link>
         ))}
       </div>
 
       <div className="sidebar-spacer" />
 
-      <div className="user-card">
-        <Avatar name={currentUser.name} size={32} />
+      <div className="user-card" style={{ cursor: 'pointer' }} onClick={signOut} title="Sign out">
+        <Avatar name={displayName} size={32} />
         <div className="user-meta">
-          <div className="user-name">{currentUser.name}</div>
-          <RoleBadge role={currentUser.role as Role} />
+          <div className="user-name">{displayName}</div>
+          <RoleBadge role={displayRole} />
         </div>
       </div>
     </div>

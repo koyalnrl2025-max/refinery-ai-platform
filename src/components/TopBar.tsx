@@ -40,7 +40,7 @@ export default function TopBar() {
         <BellIcon />
       </button>
 
-      <Avatar name={currentUser.name} size={34} />
+      <Avatar name={currentUser?.name ?? ''} size={34} />
     </div>
   );
 }

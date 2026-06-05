@@ -1,11 +1,11 @@
 'use client';
 
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import { useApp } from '@/context/AppContext';
 import { DEPT_CONTENT } from '@/lib/data';
 import Avatar from '@/components/Avatar';
 import ModelBadge from '@/components/ModelBadge';
-import { SparkleIcon, SendIcon, AttachIcon, CopyIcon, ThumbIcon, RefreshIcon, DocIcon } from '@/components/icons';
+import { SparkleIcon, SendIcon, AttachIcon, CopyIcon, ThumbIcon, RefreshIcon, DocIcon, PlusIcon } from '@/components/icons';
 
 interface Message {
   id: string;
@@ -15,20 +15,17 @@ interface Message {
   streaming?: boolean;
 }
 
+interface Conversation {
+  id: string;
+  title: string;
+  dept: string;
+  updated_at: string;
+}
+
 const INITIAL_AI: Message = {
   id: 'ai-0',
   role: 'ai',
   content: `I'm your AI-powered refinery operations assistant. I have access to your operational manuals, SOPs, HSE procedures, and engineering documents.\n\nI can help you with process troubleshooting, procedure lookup, safety compliance, maintenance planning, and operational optimization.`,
-};
-
-const SAMPLE_RESPONSES: Record<string, { content: string; citations: { doc: string; page: string }[] }> = {
-  default: {
-    content: `Based on your operational documents, here is what I found:\n\n**Key findings:**\n- The relevant procedures are documented in section 4.2 of the operating manual\n- Safety interlocks are configured per IEC 61511 functional safety standards\n- Last calibration check was performed 14 days ago\n\nWould you like me to pull up the detailed step-by-step procedure, or do you need the emergency shutdown sequence?`,
-    citations: [
-      { doc: 'CDU Operating Manual v4.2', page: 'p.84' },
-      { doc: 'HSE Procedures 2024', page: 'p.12' },
-    ],
-  },
 };
 
 export default function Chat() {
@@ -37,11 +34,22 @@ export default function Chat() {
   const [input, setInput] = useState('');
   const [focused, setFocused] = useState(false);
   const [streaming, setStreaming] = useState(false);
+  const [conversationId, setConversationId] = useState<string | null>(null);
+  const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [loadingConvs, setLoadingConvs] = useState(true);
   const threadRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   const content = DEPT_CONTENT[dept] ?? DEPT_CONTENT['all'];
   const hasMessages = messages.length > 1;
+
+  // Load conversations list
+  useEffect(() => {
+    fetch('/api/conversations')
+      .then(r => r.json())
+      .then(data => { setConversations(Array.isArray(data) ? data : []); setLoadingConvs(false); })
+      .catch(() => setLoadingConvs(false));
+  }, []);
 
   useEffect(() => {
     if (threadRef.current) {
@@ -64,7 +72,25 @@ export default function Chat() {
     }
   }
 
-  function send(text?: string) {
+  function startNewConversation() {
+    setConversationId(null);
+    setMessages([INITIAL_AI]);
+  }
+
+  async function loadConversation(conv: Conversation) {
+    setConversationId(conv.id);
+    const res = await fetch(`/api/conversations/${conv.id}`);
+    const msgs = await res.json();
+    const formatted: Message[] = [INITIAL_AI, ...msgs.map((m: any) => ({
+      id: m.id,
+      role: m.role as 'user' | 'ai',
+      content: m.content,
+      citations: m.citations ?? [],
+    }))];
+    setMessages(formatted);
+  }
+
+  async function send(text?: string) {
     const msg = (text ?? input).trim();
     if (!msg || streaming) return;
 
@@ -74,33 +100,84 @@ export default function Chat() {
 
     setMessages(prev => [...prev, userMsg, aiMsg]);
     setInput('');
+    if (textareaRef.current) textareaRef.current.style.height = 'auto';
     setStreaming(true);
 
-    const response = SAMPLE_RESPONSES['default'];
-    let i = 0;
-    const chars = response.content;
+    try {
+      const res = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: msg, conversationId, dept }),
+      });
 
-    const interval = setInterval(() => {
-      i += 4;
-      setMessages(prev =>
-        prev.map(m =>
-          m.id === aiId
-            ? { ...m, content: chars.slice(0, i), streaming: i < chars.length }
-            : m
-        )
-      );
-      if (i >= chars.length) {
-        clearInterval(interval);
-        setMessages(prev =>
-          prev.map(m =>
-            m.id === aiId
-              ? { ...m, content: chars, streaming: false, citations: response.citations }
-              : m
-          )
-        );
-        setStreaming(false);
+      if (!res.ok || !res.body) throw new Error('Chat API error');
+
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let fullText = '';
+      let citations: { doc: string; page: string }[] = [];
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';
+
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          try {
+            const event = JSON.parse(line.slice(6));
+            if (event.type === 'conv_id' && event.id) {
+              setConversationId(event.id);
+              // Add to conversations list
+              setConversations(prev => {
+                const exists = prev.some(c => c.id === event.id);
+                if (!exists) {
+                  return [{ id: event.id, title: msg.slice(0, 50), dept: dept ?? 'all', updated_at: new Date().toISOString() }, ...prev];
+                }
+                return prev;
+              });
+            } else if (event.type === 'delta') {
+              fullText += event.text;
+              setMessages(prev => prev.map(m =>
+                m.id === aiId ? { ...m, content: fullText, streaming: true } : m
+              ));
+            } else if (event.type === 'done') {
+              citations = event.citations ?? [];
+              setMessages(prev => prev.map(m =>
+                m.id === aiId ? { ...m, content: fullText, streaming: false, citations } : m
+              ));
+            } else if (event.type === 'error') {
+              setMessages(prev => prev.map(m =>
+                m.id === aiId ? { ...m, content: 'Sorry, I encountered an error. Please try again.', streaming: false } : m
+              ));
+            }
+          } catch {}
+        }
       }
-    }, 16);
+    } catch (err) {
+      setMessages(prev => prev.map(m =>
+        m.id === aiId ? { ...m, content: 'Connection error. Please check your configuration and try again.', streaming: false } : m
+      ));
+    } finally {
+      setStreaming(false);
+    }
+  }
+
+  function copyMessage(content: string) {
+    navigator.clipboard.writeText(content);
+  }
+
+  function formatTime(iso: string) {
+    const diff = Date.now() - new Date(iso).getTime();
+    const mins = Math.floor(diff / 60000);
+    if (mins < 60) return `${mins}m ago`;
+    const hours = Math.floor(mins / 60);
+    if (hours < 24) return `${hours}h ago`;
+    return new Date(iso).toLocaleDateString();
   }
 
   return (
@@ -121,7 +198,7 @@ export default function Chat() {
                 {msg.role === 'user' ? (
                   <>
                     <div className="m-av">
-                      <Avatar name={currentUser.name} size={32} />
+                      <Avatar name={currentUser?.name ?? 'User'} size={32} />
                     </div>
                     <div className="bubble">{msg.content}</div>
                   </>
@@ -176,18 +253,18 @@ export default function Chat() {
                               <span key={ci} className="cite">
                                 <DocIcon />
                                 {c.doc}
-                                <span className="pg">{c.page}</span>
+                                {c.page && <span className="pg">{c.page}</span>}
                               </span>
                             ))}
                           </div>
                         )}
-                        {!msg.streaming && (
+                        {!msg.streaming && msg.id !== 'ai-0' && (
                           <div className="ai-foot">
                             <ModelBadge />
                             <div className="ai-actions">
-                              <button className="ai-act"><CopyIcon /></button>
-                              <button className="ai-act"><ThumbIcon /></button>
-                              <button className="ai-act"><RefreshIcon /></button>
+                              <button className="ai-act" onClick={() => copyMessage(msg.content)} title="Copy"><CopyIcon /></button>
+                              <button className="ai-act" title="Thumbs up"><ThumbIcon /></button>
+                              <button className="ai-act" onClick={() => send(messages[messages.indexOf(msg) - 1]?.content)} title="Regenerate"><RefreshIcon /></button>
                             </div>
                           </div>
                         )}
@@ -212,7 +289,7 @@ export default function Chat() {
           )}
           <div className={`input-shell${focused ? ' active' : ''}`}>
             <div className="composer-row">
-              <button className="attach-btn">
+              <button className="attach-btn" title="Attach file (coming soon)">
                 <AttachIcon />
               </button>
               <textarea
@@ -224,6 +301,7 @@ export default function Chat() {
                 onBlur={() => setFocused(false)}
                 onKeyDown={handleKeyDown}
                 rows={1}
+                disabled={streaming}
               />
               <button
                 className="send-btn"

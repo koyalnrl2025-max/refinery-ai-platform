@@ -1,22 +1,50 @@
 'use client';
 
 import { useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { createClient } from '@/lib/supabase/client';
 import { SparkleIcon, MailIcon, CheckIcon, GoogleIcon } from '@/components/icons';
 
 export default function Login() {
-  const router = useRouter();
   const [email, setEmail] = useState('');
   const [sent, setSent] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
 
-  function handleMagicLink(e: React.FormEvent) {
+  const supabase = createClient();
+
+  async function handleMagicLink(e: React.FormEvent) {
     e.preventDefault();
     if (!email.trim()) return;
-    setSent(true);
+    setLoading(true);
+    setError('');
+
+    const { error } = await supabase.auth.signInWithOtp({
+      email: email.trim(),
+      options: {
+        emailRedirectTo: `${window.location.origin}/auth/callback`,
+      },
+    });
+
+    setLoading(false);
+    if (error) {
+      setError(error.message);
+    } else {
+      setSent(true);
+    }
   }
 
-  function handleEnter() {
-    router.push('/dashboard');
+  async function handleGoogleSSO() {
+    setLoading(true);
+    const { error } = await supabase.auth.signInWithOAuth({
+      provider: 'google',
+      options: {
+        redirectTo: `${window.location.origin}/auth/callback`,
+      },
+    });
+    if (error) {
+      setError(error.message);
+      setLoading(false);
+    }
   }
 
   return (
@@ -50,22 +78,26 @@ export default function Login() {
                   value={email}
                   onChange={e => setEmail(e.target.value)}
                   autoComplete="email"
+                  disabled={loading}
                 />
               </div>
-              <button type="submit" className="magic-btn">
+              {error && (
+                <div style={{ fontSize: 12.5, color: 'var(--red)', marginBottom: 8 }}>{error}</div>
+              )}
+              <button type="submit" className="magic-btn" disabled={loading || !email.trim()}>
                 <MailIcon />
-                Send magic link
+                {loading ? 'Sending…' : 'Send magic link'}
               </button>
             </form>
 
             <div className="login-divider">or continue with</div>
 
-            <button className="sso-btn" onClick={handleEnter}>
+            <button className="sso-btn" onClick={handleGoogleSSO} disabled={loading}>
               <GoogleIcon />
               Google Workspace
             </button>
 
-            <button className="sso-btn" onClick={handleEnter}>
+            <button className="sso-btn" disabled style={{ opacity: 0.5, cursor: 'not-allowed' }}>
               <svg viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg" style={{ width: 16, height: 16 }}>
                 <rect x="2" y="2" width="16" height="16" rx="3" fill="#0078D4" />
                 <path d="M4 10H16M10 4V16" stroke="white" strokeWidth="2" strokeLinecap="round" />
@@ -82,9 +114,9 @@ export default function Login() {
             <div style={{ fontSize: 13.5, color: 'var(--text-faint)', marginBottom: 20 }}>
               We sent a magic link to <strong style={{ color: 'var(--text-dim)' }}>{email}</strong>
             </div>
-            <button className="magic-btn" onClick={handleEnter}>
-              <SparkleIcon />
-              Enter demo
+            <button className="magic-btn" onClick={() => { setSent(false); setEmail(''); }}>
+              <MailIcon />
+              Use a different email
             </button>
           </div>
         )}
