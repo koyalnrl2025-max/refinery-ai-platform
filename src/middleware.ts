@@ -21,8 +21,20 @@ export async function middleware(request: NextRequest) {
     }
   );
 
-  const { data: { user } } = await supabase.auth.getUser();
+  // For API routes: also accept a Bearer token from the Authorization header
+  // (used by CLI tools, test scripts, and curl — not just browser sessions)
   const { pathname } = request.nextUrl;
+  if (pathname.startsWith('/api/')) {
+    const authHeader = request.headers.get('authorization') ?? '';
+    const bearerToken = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
+    if (bearerToken) {
+      // Validate the token — let the route handler verify via its own client
+      // Just forward the request; the route will call supabase.auth.getUser() itself
+      return NextResponse.next({ request });
+    }
+  }
+
+  const { data: { user } } = await supabase.auth.getUser();
 
   const publicPaths = ['/login', '/auth/callback', '/api/auth'];
   const isPublic = publicPaths.some(p => pathname.startsWith(p));

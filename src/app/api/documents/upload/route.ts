@@ -1,5 +1,6 @@
-import { createClient } from '@/lib/supabase/server';
-import { NextResponse } from 'next/server';
+import { createClient }  from '@/lib/supabase/server';
+import { indexDocument }  from '@/lib/indexDocument';
+import { NextResponse }   from 'next/server';
 
 export async function POST(request: Request) {
   const supabase = await createClient();
@@ -7,9 +8,8 @@ export async function POST(request: Request) {
   if (!user) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
 
   const { data: profile } = await supabase.from('profiles').select('role').eq('id', user.id).single();
-  if (!profile || !['admin', 'mgr'].includes(profile.role)) {
+  if (!profile || !['admin', 'mgr'].includes(profile.role))
     return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
-  }
 
   const formData = await request.formData();
   const file = formData.get('file') as File;
@@ -17,29 +17,25 @@ export async function POST(request: Request) {
 
   if (!file || !dept) return NextResponse.json({ error: 'file and dept required' }, { status: 400 });
 
-  const ext = file.name.split('.').pop();
-  const path = `${user.id}/${Date.now()}_${file.name.replace(/\s+/g, '_')}`;
+  // ── 1. Upload raw file to Supabase Storage ──────────────────────────────
+  const storagePath = `${user.id}/${Date.now()}_${file.name.replace(/\s+/g, '_')}`;
+  const fileBuffer  = Buffer.from(await file.arrayBuffer());
 
   const { error: uploadError } = await supabase.storage
     .from('documents')
-    .upload(path, file, { contentType: file.type });
+    .upload(storagePath, fileBuffer, { contentType: file.type });
 
   if (uploadError) return NextResponse.json({ error: uploadError.message }, { status: 500 });
 
+  // ── 2. Create document record (status: processing) ──────────────────────
   const fileSizeBytes = file.size;
-  const fileSizeStr = fileSizeBytes > 1024 * 1024
-    ? `${(fileSizeBytes / (1024 * 1024)).toFixed(1)} MB`
+  const fileSizeStr   = fileSizeBytes > 1_048_576
+    ? `${(fileSizeBytes / 1_048_576).toFixed(1)} MB`
     : `${Math.round(fileSizeBytes / 1024)} KB`;
 
   const { data: doc, error: dbError } = await supabase.from('documents').insert({
-    name: file.name,
-    dept,
-    file_size: fileSizeStr,
-    file_size_bytes: fileSizeBytes,
-    storage_path: path,
-    uploaded_by: user.id,
-    status: 'processing',
-    chunks: 0,
+    name: file.name, dept, file_size: fileSizeStr, file_size_bytes: fileSizeBytes,
+    storage_path: storagePath, uploaded_by: user.id, status: 'processing', chunks: 0,
   }).select().single();
 
   if (dbError) return NextResponse.json({ error: dbError.message }, { status: 500 });
@@ -47,14 +43,20 @@ export async function POST(request: Request) {
   await supabase.from('audit_logs').insert({
     user_id: user.id, user_name: user.email,
     action: 'Document upload', resource: file.name,
-    metadata: { dept, size: fileSizeStr, path },
+    metadata: { dept, size: fileSizeStr },
   });
 
-  // Simulate indexing completion (real pipeline: trigger chunking + embedding here)
-  setTimeout(async () => {
-    const chunks = Math.floor(fileSizeBytes / 3000) + 10;
-    await supabase.from('documents').update({ status: 'indexed', chunks }).eq('id', doc.id);
-  }, 4000);
+  // ── 3. Extract → chunk → embed → store (background, non-blocking) ───────
+  indexDocument(doc.id, dept, fileBuffer, file.name, supabase)
+    .then(({ chunks }) => console.log(`[upload] indexed "${file.name}": ${chunks} chunks`))
+    .catch(err => {
+      console.error(`[upload] indexing failed for "${file.name}":`, err.message);
+      supabase.from('audit_logs').insert({
+        user_id: user.id, user_name: user.email,
+        action: 'Document indexing failed', resource: file.name,
+        metadata: { error: err.message },
+      });
+    });
 
   return NextResponse.json(doc, { status: 201 });
 }

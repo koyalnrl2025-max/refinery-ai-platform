@@ -1,7 +1,22 @@
 import { createServerClient } from '@supabase/ssr';
-import { cookies } from 'next/headers';
+import { createClient as createSupabaseClient } from '@supabase/supabase-js';
+import { cookies, headers } from 'next/headers';
 
 export async function createClient() {
+  // If a Bearer token is present (API calls from scripts/CLI), use it directly
+  const headerStore = await headers();
+  const authHeader  = headerStore.get('authorization') ?? '';
+  if (authHeader.startsWith('Bearer ')) {
+    const token = authHeader.slice(7);
+    const client = createSupabaseClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+      { global: { headers: { Authorization: `Bearer ${token}` } }, auth: { persistSession: false } }
+    );
+    return client;
+  }
+
+  // Default: cookie-based session (browser)
   const cookieStore = await cookies();
   return createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,

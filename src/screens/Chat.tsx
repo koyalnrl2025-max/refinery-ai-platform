@@ -17,6 +17,7 @@ interface Message {
   streaming?: boolean;
   provider?: Provider;
   modelId?: string;
+  ragChunks?: number;
 }
 
 interface Conversation {
@@ -145,6 +146,10 @@ export default function Chat() {
                 }
                 return prev;
               });
+            } else if (event.type === 'context') {
+              setMessages(prev => prev.map(m =>
+                m.id === aiId ? { ...m, ragChunks: event.chunks } : m
+              ));
             } else if (event.type === 'model') {
               activeProvider = event.provider as Provider;
               activeModelId = event.modelId;
@@ -271,6 +276,16 @@ export default function Chat() {
                         )}
                         {!msg.streaming && msg.id !== 'ai-0' && (
                           <div className="ai-foot">
+                            {msg.ragChunks !== undefined && (
+                              <span className="model-badge" style={{
+                                fontSize: 11,
+                                color: msg.ragChunks > 0 ? 'var(--green)' : 'var(--amber)',
+                                borderColor: msg.ragChunks > 0 ? 'rgba(52,211,153,0.3)' : 'rgba(251,191,36,0.3)',
+                                background:  msg.ragChunks > 0 ? 'rgba(52,211,153,0.08)' : 'rgba(251,191,36,0.08)',
+                              }}>
+                                {msg.ragChunks > 0 ? `📄 ${msg.ragChunks} doc chunk${msg.ragChunks > 1 ? 's' : ''}` : '⚠ No docs matched'}
+                              </span>
+                            )}
                             <ProviderBadge provider={msg.provider} modelId={msg.modelId} />
                             <div className="ai-actions">
                               <button className="ai-act" onClick={() => copyMessage(msg.content)} title="Copy"><CopyIcon /></button>
