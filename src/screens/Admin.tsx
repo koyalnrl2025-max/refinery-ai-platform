@@ -390,52 +390,25 @@ function UploadModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: (
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     if (!file) return;
-    setLoading(true); setError(''); setProgress('Uploading to storage…');
+    setLoading(true); setError(''); setProgress('Uploading and processing…');
 
+    // Get session token — required by the Cloudflare Pages Function
     const supabase = createClient();
+    const { data: { session } } = await supabase.auth.getSession();
+    const headers: Record<string, string> = {};
+    if (session?.access_token) headers['Authorization'] = `Bearer ${session.access_token}`;
 
-    // 1. Get current user
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) { setError('Not signed in.'); setLoading(false); return; }
+    const fd = new FormData();
+    fd.append('file', file);
+    fd.append('dept', dept);
 
-    // 2. Upload file directly to Supabase Storage from the browser
-    const storagePath = `${user.id}/${Date.now()}_${file.name.replace(/\s+/g, '_')}`;
-    const { error: storageErr } = await supabase.storage
-      .from('documents')
-      .upload(storagePath, file, { contentType: file.type });
-
-    if (storageErr) {
-      setError(`Storage upload failed: ${storageErr.message}`);
-      setLoading(false); return;
-    }
-
-    // 3. Create document record in DB
-    setProgress('Saving document record…');
-    const fileSizeStr = file.size > 1_048_576
-      ? `${(file.size / 1_048_576).toFixed(1)} MB`
-      : `${Math.round(file.size / 1024)} KB`;
-
-    const { error: dbErr } = await supabase.from('documents').insert({
-      name: file.name,
-      dept,
-      file_size: fileSizeStr,
-      file_size_bytes: file.size,
-      storage_path: storagePath,
-      uploaded_by: user.id,
-      status: 'processing',  // RAG indexing runs on the local server
-      chunks: 0,
-    });
-
+    const res = await fetch('/api/documents/upload', { method: 'POST', headers, body: fd });
     setLoading(false);
-    if (dbErr) { setError(`DB error: ${dbErr.message}`); return; }
-
-    // 4. Audit log
-    await supabase.from('audit_logs').insert({
-      user_id: user.id, user_name: user.email,
-      action: 'Document upload', resource: file.name,
-      metadata: { dept, size: fileSizeStr, via: 'browser-direct' },
-    });
-
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      setError((data as { error?: string }).error ?? `Upload failed (${res.status})`);
+      return;
+    }
     onSuccess();
   }
 
@@ -454,20 +427,15 @@ function UploadModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: (
             <label>File (PDF, DOCX, TXT)</label>
             <input type="file" accept=".pdf,.docx,.txt,.doc" onChange={e => setFile(e.target.files?.[0] ?? null)} required style={{ fontSize: 13 }} />
           </div>
-          {loading && progress && (
-            <div style={{ fontSize: 12.5, color: 'var(--accent)' }}>{progress}</div>
-          )}
+          {loading && <div style={{ fontSize: 12.5, color: 'var(--accent)' }}>{progress}</div>}
           {error && <div style={{ fontSize: 12.5, color: 'var(--red)' }}>{error}</div>}
           <div style={{ display: 'flex', gap: 10, marginTop: 4 }}>
             <button type="button" className="btn" onClick={onClose} style={{ flex: 1 }}>Cancel</button>
             <button type="submit" className="btn btn-primary" disabled={loading || !file} style={{ flex: 1 }}>
-              {loading ? progress || 'Uploading…' : 'Upload'}
+              {loading ? 'Processing…' : 'Upload'}
             </button>
           </div>
         </form>
-        <div style={{ marginTop: 14, fontSize: 12, color: 'var(--text-faint)', lineHeight: 1.5 }}>
-          File is stored in Supabase Storage. RAG indexing runs when the local server processes it.
-        </div>
       </div>
     </div>
   );

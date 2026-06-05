@@ -6,13 +6,61 @@
  */
 
 const SYSTEM_PROMPT = `You are RefineIQ, an AI assistant for a refinery organisation's Operations and HR departments.
-Your primary knowledge base is the documents uploaded by your organisation.
+Your PRIMARY source of truth is the DOCUMENT CONTEXT block provided below.
 
 Rules:
-1. Answer from your training knowledge about refinery operations and HR best practices.
-2. If the question is about specific internal policy, clearly state: "For precise internal policy details, please check the uploaded documents on the local platform."
-3. Be concise, professional, and structured. Use bullet points for lists.
-4. Flag safety-critical information prominently.`;
+1. Answer ONLY from the provided document context when it is relevant.
+2. Always cite sources like: [Doc: <filename>, chunk <n>]
+3. If context doesn't cover the question, say: "I couldn't find this in the uploaded documents." Then briefly supplement with general knowledge, clearly flagged.
+4. Never fabricate policy numbers, names, or dates.
+5. Be concise and structured. Use bullet points for lists.`;
+
+// ── OpenAI embedding for RAG query ────────────────────────────────────────────
+async function embedQuery(text, apiKey) {
+  const res = await fetch('https://api.openai.com/v1/embeddings', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model: 'text-embedding-3-small', input: text, dimensions: 768 }),
+  });
+  if (!res.ok) return null;
+  const data = await res.json();
+  return data.data[0]?.embedding ?? null;
+}
+
+// ── RAG: retrieve relevant document chunks via Supabase RPC ───────────────────
+async function retrieveContext(query, dept, token, supabaseUrl, supabaseAnon, openaiKey) {
+  try {
+    const embedding = await embedQuery(query, openaiKey);
+    if (!embedding) return { contextBlock: '', sources: [] };
+
+    const rpcRes = await fetch(`${supabaseUrl}/rest/v1/rpc/match_document_chunks`, {
+      method: 'POST',
+      headers: {
+        apikey: supabaseAnon, Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        query_embedding: embedding,
+        match_count: 5,
+        match_threshold: 0.25,
+        dept_filter: (dept && dept !== 'all') ? dept : null,
+      }),
+    });
+    if (!rpcRes.ok) return { contextBlock: '', sources: [] };
+
+    const chunks = await rpcRes.json();
+    if (!chunks?.length) return { contextBlock: '', sources: [] };
+
+    const contextBlock = chunks.map((c, i) =>
+      `[${i + 1}] Source: ${c.document_name}, chunk ${c.chunk_index} (${(c.similarity * 100).toFixed(0)}% match)\n${c.content}`
+    ).join('\n\n---\n\n');
+
+    const sources = chunks.map(c => ({ doc: c.document_name, page: `chunk ${c.chunk_index}` }));
+    return { contextBlock, sources };
+  } catch {
+    return { contextBlock: '', sources: [] };
+  }
+}
 
 export async function onRequestPost(context) {
   const { request, env } = context;
@@ -46,6 +94,7 @@ export async function onRequestPost(context) {
 
   const SUPABASE_URL  = env.NEXT_PUBLIC_SUPABASE_URL;
   const SUPABASE_ANON = env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+  const OPENAI_KEY    = env.OPENAI_API_KEY;
   const startMs       = Date.now();
 
   // ── Verify Supabase JWT ───────────────────────────────────────────────────
@@ -71,6 +120,14 @@ export async function onRequestPost(context) {
         controller.enqueue(encoder.encode(`data: ${JSON.stringify(obj)}\n\n`));
 
       try {
+        // 0. RAG: retrieve relevant document chunks (parallel with conversation setup)
+        const { contextBlock, sources } = await retrieveContext(
+          message, dept, token, SUPABASE_URL, SUPABASE_ANON, OPENAI_KEY
+        );
+        const systemWithContext = contextBlock
+          ? `${SYSTEM_PROMPT}\n\n${'─'.repeat(60)}\nDOCUMENT CONTEXT:\n\n${contextBlock}\n${'─'.repeat(60)}`
+          : `${SYSTEM_PROMPT}\n\n(No relevant documents found for this query.)`;
+
         // 1. Create conversation if new
         let convId = conversationId;
         if (!convId) {
@@ -84,7 +141,7 @@ export async function onRequestPost(context) {
           convId = Array.isArray(convData) ? convData[0]?.id : convData?.id;
         }
         send({ type: 'conv_id', id: convId });
-        send({ type: 'context', chunks: 0, hasDocs: false }); // RAG needs local Ollama
+        send({ type: 'context', chunks: sources.length, hasDocs: sources.length > 0 });
 
         // 2. Save user message
         if (convId) {
@@ -115,7 +172,7 @@ export async function onRequestPost(context) {
                 model: modelId,
                 max_tokens: 1024,
                 stream: true,
-                system: SYSTEM_PROMPT,
+                system: systemWithContext,
                 messages: [{ role: 'user', content: message }],
               }),
             });
@@ -165,7 +222,7 @@ export async function onRequestPost(context) {
                 model: modelId,
                 stream: true,
                 messages: [
-                  { role: 'system', content: SYSTEM_PROMPT },
+                  { role: 'system', content: systemWithContext },
                   { role: 'user', content: message },
                 ],
               }),
@@ -227,7 +284,7 @@ export async function onRequestPost(context) {
           body: JSON.stringify({ uid: user.id }),
         });
 
-        send({ type: 'done', citations: [], sentiment: 'neu', responseMs, provider, modelId });
+        send({ type: 'done', citations: sources, sentiment: 'neu', responseMs, provider, modelId });
         controller.close();
 
       } catch (err) {
