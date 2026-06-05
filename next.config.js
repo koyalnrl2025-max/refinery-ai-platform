@@ -6,14 +6,7 @@ const nextConfig = {
 
   // Next.js 14 key for keeping packages out of the server bundle
   experimental: {
-    serverComponentsExternalPackages: ['mammoth', 'pdfjs-dist'],
-  },
-
-  webpack: (config, { isServer }) => {
-    if (isServer) {
-      config.resolve.alias = { ...config.resolve.alias, canvas: false };
-    }
-    return config;
+    serverComponentsExternalPackages: ['mammoth', 'pdf2json'],
   },
 };
 module.exports = nextConfig;

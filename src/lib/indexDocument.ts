@@ -11,28 +11,34 @@ export async function extractText(buffer: Buffer, filename: string): Promise<str
   const ext = filename.split('.').pop()?.toLowerCase();
 
   if (ext === 'pdf') {
-    // pdfjs-dist v3 — CommonJS legacy build, works reliably in Node.js
-    // serverExternalPackages keeps webpack from bundling this
+    // pdf2json: pure-JS PDF parser, no workers, no canvas — works in any Node.js context
     // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const pdfjsLib = require('pdfjs-dist/legacy/build/pdf.js');
-    // Point worker to the real file on disk so pdfjs-dist can spawn it
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    pdfjsLib.GlobalWorkerOptions.workerSrc = require.resolve(
-      'pdfjs-dist/legacy/build/pdf.worker.js'
-    );
-
-    const loadingTask = pdfjsLib.getDocument({ data: new Uint8Array(buffer) });
-    const doc  = await loadingTask.promise;
-    const pages: string[] = [];
-    for (let i = 1; i <= doc.numPages; i++) {
-      const page    = await doc.getPage(i);
-      const content = await page.getTextContent();
-      const text    = (content.items as { str: string }[])
-        .map(item => item.str)
-        .join(' ');
-      pages.push(text);
-    }
-    return pages.join('\n\n');
+    const PDFParser = require('pdf2json');
+    return new Promise<string>((resolve, reject) => {
+      const parser = new PDFParser(null, 1); // 1 = raw text content mode
+      parser.on('pdfParser_dataReady', () => {
+        try {
+          // getRawTextContent() returns decoded text with form-feed page breaks
+          const raw: string = parser.getRawTextContent();
+          // Clean up: remove page-break markers and normalise whitespace
+          const text = raw
+            .replace(/\f/g, '\n\n')            // form feed → paragraph break
+            .replace(/\r\n/g, '\n')
+            .replace(/[ \t]{2,}/g, ' ')
+            .trim();
+          resolve(text);
+        } catch (e) {
+          reject(e);
+        }
+      });
+      parser.on('pdfParser_dataError', (err: unknown) => {
+        const msg = typeof err === 'object' && err !== null && 'parserError' in err
+          ? String((err as { parserError: unknown }).parserError)
+          : String(err);
+        reject(new Error(`PDF parse failed: ${msg}`));
+      });
+      parser.parseBuffer(buffer);
+    });
   }
 
   if (ext === 'docx' || ext === 'doc') {
