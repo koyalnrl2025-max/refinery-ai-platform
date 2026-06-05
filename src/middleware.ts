@@ -28,6 +28,10 @@ export async function middleware(request: NextRequest) {
   const isPublic = publicPaths.some(p => pathname.startsWith(p));
 
   if (!user && !isPublic) {
+    // Return 401 for API routes; redirect browser routes to login
+    if (pathname.startsWith('/api/')) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
     const url = request.nextUrl.clone();
     url.pathname = '/login';
     return NextResponse.redirect(url);

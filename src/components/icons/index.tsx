@@ -293,6 +293,15 @@ export function FileIcon(props: IconProps) {
   );
 }
 
+export function LockIcon(props: IconProps) {
+  return (
+    <svg viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg" width={16} height={16} {...props}>
+      <rect x="4" y="9" width="12" height="9" rx="2" stroke="currentColor" strokeWidth="1.5" />
+      <path d="M7 9V6a3 3 0 0 1 6 0v3" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+    </svg>
+  );
+}
+
 export function GoogleIcon(props: IconProps) {
   return (
     <svg viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg" {...props}>
